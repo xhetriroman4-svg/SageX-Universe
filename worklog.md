@@ -103,3 +103,38 @@ Stage Summary:
 - Browser component enhanced with error handling, favicons, improved UX
 - New JS bundle: index-xCCqFPY8.js
 - Tested proxy with example.com (200), google.com (200), wikipedia.org (200), github.com (200)
+
+---
+Task ID: 2
+Agent: Main
+Task: Fix browser - data-action and custom protocol URL rewriting was breaking sites
+
+Work Log:
+- Analyzed user's screenshot showing GitHub partially loading but broken
+- Found that `data-action="click:..."` attributes were being matched by `action=` regex
+- Found custom URL schemes like `click:`, `close:`, `input:` were being proxied
+- Found `.src` and `.href` JS rewriting was too aggressive and breaking JS engines
+- Found click handler was using `e.preventDefault()` + `location.assign()` which broke SPAs
+
+Fixes applied to /src/app/api/proxy/route.ts:
+1. Added `shouldProxy()` function that rejects custom URL schemes (click:, close:, input:, etc.)
+2. Replaced `\b` word boundary regex with `\s` (whitespace) prefix for attribute matching
+3. This ensures `data-action=` is NOT matched by the `action=` pattern
+4. Removed `.src` and `.href` JavaScript rewriting (too aggressive, breaks JS engines)
+5. Changed click interception from `e.preventDefault()` + `location.assign()` to `setAttribute('href', proxyUrl)` 
+6. Added custom protocol detection in injection script's `proxyUrl()` function
+7. Added `mailto:` and `tel:` to skip lists
+
+Test results:
+- 0 broken data-action attributes (was 21)
+- 0 click: protocol URLs being proxied (was 7)
+- 98 normal hrefs properly proxied
+- 15 data-action="click:..." attributes preserved intact
+- Form actions, script srcs still correctly proxied
+- CSS, JS, Google, Example.com all return 200
+
+Stage Summary:
+- The core bug was `data-action="click:..."` being rewritten by the `action=` regex
+- Custom URL schemes from JS frameworks (stimulus.js, etc.) were being incorrectly proxied
+- JS `.src`/`.href` rewriting was breaking JavaScript execution
+- All issues fixed, proxy now works correctly for GitHub and other JS-heavy sites

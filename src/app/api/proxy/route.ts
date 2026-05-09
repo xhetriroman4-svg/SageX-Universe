@@ -214,9 +214,29 @@ async function handleProxy(request: NextRequest, method: string) {
       responseHeaders.append("Set-Cookie", newCookie);
     }
 
+    /* ── Helper: check if a URL should be proxied ── */
+    const shouldProxy = (url: string): boolean => {
+      if (!url || url.length < 2) return false;
+      // Skip non-URL values
+      if (url.startsWith("data:")) return false;
+      if (url.startsWith("javascript:")) return false;
+      if (url.startsWith("blob:")) return false;
+      if (url.startsWith("about:")) return false;
+      if (url.startsWith("#")) return false;
+      if (url.startsWith("mailto:")) return false;
+      if (url.startsWith("tel:")) return false;
+      // Skip custom protocols used by JS frameworks (click:, close:, input:, etc.)
+      if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("http:") && !url.startsWith("https:") && !url.startsWith("/")) return false;
+      // Skip already-proxied URLs
+      if (url.includes("/api/proxy?url=")) return false;
+      // Skip fragment-only URLs
+      if (url.startsWith("#")) return false;
+      return true;
+    };
+
     /* ── Helper: rewrite a URL to go through proxy ── */
     const rewriteUrl = (url: string): string => {
-      if (!url || url.startsWith("data:") || url.startsWith("javascript:") || url.startsWith("#") || url.startsWith("blob:") || url.startsWith("about:") || url.includes("/api/proxy?url=")) return url;
+      if (!shouldProxy(url)) return url;
       try {
         const absoluteUrl = new URL(url, currentUrl).href;
         return buildProxyUrl(absoluteUrl, adblock, dark);
@@ -239,71 +259,34 @@ async function handleProxy(request: NextRequest, method: string) {
         }
       );
 
-      // ── Rewrite src, href, action attributes ──
-      // Double-quoted attributes
-      html = html.replace(/(src|href|action)=["']([^"']+)["']/gi, (_m, attr, url) => {
-        // Skip data:, javascript:, blob:, about: URLs and inline SVG
-        if (url.startsWith("data:") || url.startsWith("javascript:") || url.startsWith("blob:") || url.startsWith("about:") || url.startsWith("#")) return _m;
-        // Skip already-proxied URLs
-        if (url.includes("/api/proxy?url=")) return _m;
-        return `${attr}="${rewriteUrl(url)}"`;
-      });
-      // Unquoted attributes
-      html = html.replace(/(src|href|action)=([^\s>"'][^\s>]*)/gi, (_m, attr, url) => {
-        if (url.startsWith("data:") || url.startsWith("javascript:") || url.startsWith("blob:") || url.startsWith("about:") || url.startsWith("#")) return _m;
-        if (url.includes("/api/proxy?url=")) return _m;
-        return `${attr}=${rewriteUrl(url.replace(/["']/g, ""))}`;
-      });
-
-      // ── Rewrite srcset ──
-      html = html.replace(/srcset=["']([^"']+)["']/gi, (_m, srcset) => {
-        const newSrcset = srcset
-          .split(",")
-          .map((entry: string) => {
-            const parts = entry.trim().split(/\s+/);
-            if (parts[0] && !parts[0].startsWith("data:") && !parts[0].startsWith("blob:")) {
-              parts[0] = rewriteUrl(parts[0]);
-            }
-            return parts.join(" ");
-          })
-          .join(", ");
-        return `srcset="${newSrcset}"`;
-      });
-
-      // ── Rewrite <link> stylesheet/style URLs ──
-      html = html.replace(/<link[^>]+href=["']([^"']+)["'][^>]*>/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.includes("/api/proxy?url=")) return _m;
-        return _m.replace(url, rewriteUrl(url));
-      });
-
-      // ── Rewrite <img> srcset and loading attributes ──
-      html = html.replace(/<img[^>]+src=["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.startsWith("blob:") || url.includes("/api/proxy?url=")) return _m;
-        return _m.replace(url, rewriteUrl(url));
-      });
-
-      // ── Rewrite <source> src ──
-      html = html.replace(/<source[^>]+src=["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.startsWith("blob:") || url.includes("/api/proxy?url=")) return _m;
-        return _m.replace(url, rewriteUrl(url));
-      });
-
-      // ── Rewrite poster attribute on video ──
-      html = html.replace(/poster=["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.includes("/api/proxy?url=")) return _m;
-        return `poster="${rewriteUrl(url)}"`;
-      });
-
-      // ── Rewrite data-src for lazy-loaded images ──
-      html = html.replace(/data-src=["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.startsWith("blob:") || url.includes("/api/proxy?url=")) return _m;
-        return `data-src="${rewriteUrl(url)}"`;
-      });
-
-      // ── Rewrite data-bg, data-lazy-src ──
-      html = html.replace(/data-(?:bg|lazy-src|lazy|original)=["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.startsWith("blob:") || url.includes("/api/proxy?url=")) return _m;
-        return _m.replace(url, rewriteUrl(url));
+      // ── Rewrite HTML tag attributes using a single comprehensive pass ──
+      // This replaces the old multiple-regex approach which had issues:
+      // 1. (src|href|action)= matched data-action= (broke GitHub's stimulus.js)
+      // 2. Custom URL schemes like click:, close: were being proxied
+      // The new approach uses a single tag-by-tag pass
+      html = html.replace(/<([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*?)?)(\s*\/?)>/g, (_m, tagName, attrs, closing) => {
+        let newAttrs = attrs;
+        // Match attributes preceded by whitespace (not part of another attribute name like data-action)
+        // Use \s to ensure we're at the start of an attribute, not mid-word
+        newAttrs = newAttrs.replace(/(\s)(src|href|action|poster|data-src|data-bg|data-lazy-src|data-original)=["']([^"']+)["']/gi, (_attrMatch, ws, attrName, url) => {
+          if (!shouldProxy(url)) return _attrMatch;
+          return `${ws}${attrName}="${rewriteUrl(url)}"`;
+        });
+        // Handle srcset separately (comma-separated URLs)
+        newAttrs = newAttrs.replace(/(\s)(srcset)=["']([^"']+)["']/gi, (_attrMatch, ws, attrName, srcset) => {
+          const newSrcset = srcset
+            .split(",")
+            .map((entry: string) => {
+              const parts = entry.trim().split(/\s+/);
+              if (parts[0] && shouldProxy(parts[0])) {
+                parts[0] = rewriteUrl(parts[0]);
+              }
+              return parts.join(" ");
+            })
+            .join(", ");
+          return `${ws}${attrName}="${newSrcset}"`;
+        });
+        return `<${tagName}${newAttrs}${closing}>`;
       });
 
       // ── AdBlock ──
@@ -387,14 +370,17 @@ async function handleProxy(request: NextRequest, method: string) {
     if (!url) return url;
     if (typeof url !== 'string') url = String(url);
     if (url.startsWith('data:') || url.startsWith('javascript:') || url.startsWith('blob:') ||
-        url.startsWith('about:') || url.startsWith('#') || url.includes('/api/proxy?url=')) return url;
+        url.startsWith('about:') || url.startsWith('#') || url.startsWith('mailto:') ||
+        url.startsWith('tel:') || url.includes('/api/proxy?url=')) return url;
+    // Skip custom protocols (click:, close:, input:, etc. used by JS frameworks)
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('http:') && !url.startsWith('https:') && !url.startsWith('/')) return url;
     try {
       var absolute = new URL(url, location.href).href;
       return '/api/proxy?url=' + encodeURIComponent(absolute) + (_adblock ? '&adblock=true' : '') + (_dark ? '&dark=true' : '');
     } catch(e) { return url; }
   }
 
-  /* ── Click interception ── */
+  /* ── Click interception — rewrite href instead of preventing default ── */
   document.addEventListener('click', function(e) {
     var target = e.target;
     // Walk up to find anchor
@@ -402,12 +388,10 @@ async function handleProxy(request: NextRequest, method: string) {
     if (target && target.tagName === 'A') {
       if (target.target === '_blank') target.target = '_self';
       var href = target.getAttribute('href');
-      if (href && !href.startsWith('#') && !href.startsWith('javascript:') && !href.startsWith('data:') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        var proxied = proxyUrl(href);
-        location.assign(proxied);
+      if (href && !href.startsWith('#') && !href.startsWith('javascript:') && !href.startsWith('data:') && !href.startsWith('mailto:') && !href.startsWith('tel:') && !href.includes('/api/proxy')) {
+        // Rewrite the href in-place so the browser's default navigation uses the proxy URL
+        // This preserves JavaScript event handlers and doesn't break SPAs
+        try { target.setAttribute('href', proxyUrl(href)); } catch(ex) {}
       }
     }
   }, true);
@@ -594,27 +578,11 @@ async function handleProxy(request: NextRequest, method: string) {
         }
       });
 
-      // Rewrite dynamic script src assignments like .src = "..."
-      js = js.replace(/\.src\s*=\s*["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("javascript:") || url.includes("/api/proxy?url=")) return _m;
-        try {
-          const absoluteUrl = new URL(url, currentUrl).href;
-          return `.src = "${buildProxyUrl(absoluteUrl, adblock, dark)}"`;
-        } catch {
-          return _m;
-        }
-      });
-
-      // Rewrite .href assignments
-      js = js.replace(/\.href\s*=\s*["']([^"']+)["']/gi, (_m, url) => {
-        if (url.startsWith("data:") || url.startsWith("javascript:") || url.startsWith("#") || url.includes("/api/proxy?url=")) return _m;
-        try {
-          const absoluteUrl = new URL(url, currentUrl).href;
-          return `.href = "${buildProxyUrl(absoluteUrl, adblock, dark)}"`;
-        } catch {
-          return _m;
-        }
-      });
+      // NOTE: We intentionally do NOT rewrite .src = "..." or .href = "..." in JS
+      // because these patterns are too ambiguous (object properties vs DOM attributes)
+      // and the injection script handles runtime interception of fetch/XHR anyway.
+      // The injection script's fetch/XHR interception covers dynamic URL assignments
+      // that go through the network, and <base href> handles relative URL resolution.
 
       responseHeaders.set("Content-Type", "application/javascript; charset=utf-8");
       return new NextResponse(js, { status: response.status, headers: responseHeaders });
