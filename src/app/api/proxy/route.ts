@@ -11,18 +11,25 @@ const isBlockedHostname = (hostname: string) => {
 };
 
 /* ═══════════════════════════════════════════════════════════════
-   ROBUST WEB PROXY — Handles HTML/CSS/JS rewriting, ad blocking,
-   dark mode, cookie isolation, redirects, error pages, timeouts
+   ROBUST WEB PROXY v2 — Fixed CSS/JS loading, no base href,
+   proper URL resolution, MutationObserver for dynamic resources
    ═══════════════════════════════════════════════════════════════ */
 
-const FETCH_TIMEOUT = 15000; // 15s timeout
+const FETCH_TIMEOUT = 20000; // 20s timeout
 
 function buildProxyUrl(url: string, adblock: boolean, dark: boolean) {
   return `/api/proxy?url=${encodeURIComponent(url)}${adblock ? "&adblock=true" : ""}${dark ? "&dark=true" : ""}`;
 }
 
+function escapeHtml(str: string) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function errorPageHtml(title: string, message: string, originalUrl: string, adblock: boolean, dark: boolean) {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+  const safeTitle = escapeHtml(title);
+  const safeMsg = escapeHtml(message);
+  const safeUrl = escapeHtml(originalUrl);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${safeTitle}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
@@ -36,18 +43,18 @@ function errorPageHtml(title: string, message: string, originalUrl: string, adbl
   .btn-secondary { background: rgba(255,255,255,0.1); color: #e0e0e0; }
 </style></head><body>
 <div class="error-card">
-  <div class="error-icon">🌐</div>
-  <div class="error-title">${title}</div>
-  <div class="error-msg">${message}</div>
-  <div class="error-url">${originalUrl}</div>
+  <div class="error-icon">&#127760;</div>
+  <div class="error-title">${safeTitle}</div>
+  <div class="error-msg">${safeMsg}</div>
+  <div class="error-url">${safeUrl}</div>
   <div>
-    <a class="btn btn-primary" href="${buildProxyUrl(originalUrl, adblock, dark)}">⟳ Retry</a>
-    <a class="btn btn-secondary" href="${originalUrl}" target="_blank" rel="noopener">↗ Open Directly</a>
+    <a class="btn btn-primary" href="${buildProxyUrl(originalUrl, adblock, dark)}">Retry</a>
+    <a class="btn btn-secondary" href="${originalUrl}" target="_blank" rel="noopener">Open Directly</a>
   </div>
 </div>
 <script>
   if (window.parent !== window) {
-    window.parent.postMessage({ type: 'sagex-page-error', url: "${originalUrl}", title: "${title}" }, '*');
+    window.parent.postMessage({ type: 'sagex-page-error', url: "${escapeHtml(originalUrl)}", title: "${safeTitle}" }, '*');
   }
 </script>
 </body></html>`;
@@ -130,14 +137,13 @@ async function handleProxy(request: NextRequest, method: string) {
     }
     clearTimeout(timeoutId);
 
-    /* ── Handle redirects (follow up to 10) ── */
+    /* ── Handle redirects (follow up to 10 server-side) ── */
     let redirectCount = 0;
     let currentUrl = targetUrl;
     while (response.status >= 300 && response.status < 400 && redirectCount < 10) {
       const location = response.headers.get("location");
       if (!location) break;
       const absoluteLocation = new URL(location, currentUrl).href;
-      // Instead of redirecting the browser, follow the redirect server-side
       const redirHeaders: Record<string, string> = {
         "User-Agent": headersToForward["User-Agent"],
         Accept: headersToForward.Accept,
@@ -170,7 +176,7 @@ async function handleProxy(request: NextRequest, method: string) {
     const contentType = response.headers.get("content-type") || "";
     const body = await response.arrayBuffer();
 
-    /* ── Build response headers ── */
+    /* ── Build response headers — strip security headers that block framing ── */
     const responseHeaders = new Headers();
     response.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
@@ -189,11 +195,15 @@ async function handleProxy(request: NextRequest, method: string) {
           "set-cookie",
           "public-key-pins",
           "public-key-pins-report-only",
+          "cross-origin-opener-policy",
+          "cross-origin-embedder-policy",
+          "cross-origin-resource-policy",
         ].includes(lowerKey)
       ) {
         responseHeaders.set(key, value);
       }
     });
+    // Allow everything from our proxy
     responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
     responseHeaders.set("Access-Control-Allow-Headers", "*");
@@ -207,7 +217,6 @@ async function handleProxy(request: NextRequest, method: string) {
         .replace(/Domain=[^;]+;?/gi, "")
         .replace(/SameSite=[^;]+;?/gi, "SameSite=Lax;")
         .replace(/Secure;?/gi, "");
-      // Keep the path as-is rather than rewriting to /api/proxy, which breaks cookies
       if (!/Path=/i.test(newCookie)) {
         newCookie += "; Path=/";
       }
@@ -217,7 +226,6 @@ async function handleProxy(request: NextRequest, method: string) {
     /* ── Helper: check if a URL should be proxied ── */
     const shouldProxy = (url: string): boolean => {
       if (!url || url.length < 2) return false;
-      // Skip non-URL values
       if (url.startsWith("data:")) return false;
       if (url.startsWith("javascript:")) return false;
       if (url.startsWith("blob:")) return false;
@@ -229,8 +237,6 @@ async function handleProxy(request: NextRequest, method: string) {
       if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("http:") && !url.startsWith("https:") && !url.startsWith("/")) return false;
       // Skip already-proxied URLs
       if (url.includes("/api/proxy?url=")) return false;
-      // Skip fragment-only URLs
-      if (url.startsWith("#")) return false;
       return true;
     };
 
@@ -250,7 +256,10 @@ async function handleProxy(request: NextRequest, method: string) {
        ══════════════════════════════════════ */
     if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
       let html = new TextDecoder().decode(body);
-      const baseHref = new URL(currentUrl).origin + "/";
+
+      // ── CRITICAL: Remove any existing <base> tags ──
+      // Existing <base> tags would break our proxy URL resolution
+      html = html.replace(/<base[^>]*>/gi, "");
 
       // ── Rewrite <meta http-equiv="refresh"> ──
       html = html.replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["']?(\d+;\s*url=)([^"'>]+)["']?[^>]*>/gi,
@@ -259,20 +268,20 @@ async function handleProxy(request: NextRequest, method: string) {
         }
       );
 
-      // ── Rewrite HTML tag attributes using a single comprehensive pass ──
-      // This replaces the old multiple-regex approach which had issues:
-      // 1. (src|href|action)= matched data-action= (broke GitHub's stimulus.js)
-      // 2. Custom URL schemes like click:, close: were being proxied
-      // The new approach uses a single tag-by-tag pass
+      // ── Rewrite HTML tag attributes ──
       html = html.replace(/<([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*?)?)(\s*\/?)>/g, (_m, tagName, attrs, closing) => {
         let newAttrs = attrs;
-        // Match attributes preceded by whitespace (not part of another attribute name like data-action)
-        // Use \s to ensure we're at the start of an attribute, not mid-word
+        // Match URL attributes preceded by whitespace
         newAttrs = newAttrs.replace(/(\s)(src|href|action|poster|data-src|data-bg|data-lazy-src|data-original)=["']([^"']+)["']/gi, (_attrMatch, ws, attrName, url) => {
           if (!shouldProxy(url)) return _attrMatch;
           return `${ws}${attrName}="${rewriteUrl(url)}"`;
         });
-        // Handle srcset separately (comma-separated URLs)
+        // Handle unquoted attributes (valid HTML but less common)
+        newAttrs = newAttrs.replace(/(\s)(src|href|action)=([^\s>"']+)/gi, (_attrMatch, ws, attrName, url) => {
+          if (!shouldProxy(url)) return _attrMatch;
+          return `${ws}${attrName}="${rewriteUrl(url)}"`;
+        });
+        // Handle srcset (comma-separated URLs)
         newAttrs = newAttrs.replace(/(\s)(srcset)=["']([^"']+)["']/gi, (_attrMatch, ws, attrName, srcset) => {
           const newSrcset = srcset
             .split(",")
@@ -289,24 +298,34 @@ async function handleProxy(request: NextRequest, method: string) {
         return `<${tagName}${newAttrs}${closing}>`;
       });
 
+      // ── Rewrite inline <style> url() references ──
+      html = html.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_m, attrs, cssContent) => {
+        const rewritten = cssContent.replace(/url\(\s*["']?([^"'\)]+)["']?\s*\)/gi, (urlMatch: string, url: string) => {
+          if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("#") || url.includes("/api/proxy?url=")) return urlMatch;
+          try {
+            const absoluteUrl = new URL(url, currentUrl).href;
+            return `url("${buildProxyUrl(absoluteUrl, adblock, dark)}")`;
+          } catch {
+            return urlMatch;
+          }
+        });
+        return `<style${attrs}>${rewritten}</style>`;
+      });
+
       // ── AdBlock ──
       if (adblock) {
-        // Remove known ad/tracking scripts
         html = html.replace(
           /<script[^>]*src=["'][^"']*(doubleclick|google-analytics|googlesyndication|googleadservices|googletagmanager|popads|adsense|amazon-adsystem|facebook\.net.*plugin|connect\.facebook|analytics\.tiktok|clarity\.ms|hotjar|cdn\.amplitude|segment\.io|optimizely|chartbeat|newrelic|nr-data|mixpanel|heap\.io|fullstory|mouseflow|crazyegg|quantserve|scorecardresearch|outbrain|taboola|criteo|adnxs|rubiconproject|pubmatic|openx|casalemedia|indexww|moatads|sharethis|addthis|disqus)[^"']*["'][^>]*><\/script>/gi,
           ""
         );
-        // Remove ad iframes
         html = html.replace(
           /<iframe[^>]*src=["'][^"']*(doubleclick|googlesyndication|ads|adserver|ad\.|adservice|amazon-adsystem|taboola|outbrain)[^"']*["'][^>]*>[\s\S]*?<\/iframe>/gi,
           ""
         );
-        // Remove inline ad containers
         html = html.replace(
           /<div[^>]*(class|id)=["'][^"']*(ad[_-]?container|ad[_-]?wrapper|ad[_-]?slot|advertisement|sponsor|promo[_-]?box|google[_-]?ad|taboola|outbrain)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
           ""
         );
-        // Remove noscript ad tags
         html = html.replace(
           /<noscript[^>]*>[\s\S]*?(doubleclick|googlesyndication|adsense|facebook\.net)[\s\S]*?<\/noscript>/gi,
           ""
@@ -357,40 +376,128 @@ async function handleProxy(request: NextRequest, method: string) {
         : "";
 
       /* ════════════════════════════════════════════════════════════
-         PROXY INJECTION SCRIPT — Intercepts navigation, fetch, XHR,
-         form submissions, and syncs URL bar with parent frame
+         PROXY INJECTION SCRIPT v2 — Uses _origUrl for resolution,
+         MutationObserver for dynamic resources, proper URL handling
          ════════════════════════════════════════════════════════════ */
       const proxyScript = `<script data-sagex-proxy="1">
 (function(){
   var _origUrl = "${currentUrl}";
+  var _origOrigin = "${new URL(currentUrl).origin}";
   var _adblock = ${adblock ? "true" : "false"};
   var _dark = ${dark ? "true" : "false"};
 
+  /* ── Resolve a URL relative to the ORIGINAL page, then convert to proxy URL ── */
   function proxyUrl(url) {
     if (!url) return url;
     if (typeof url !== 'string') url = String(url);
     if (url.startsWith('data:') || url.startsWith('javascript:') || url.startsWith('blob:') ||
         url.startsWith('about:') || url.startsWith('#') || url.startsWith('mailto:') ||
         url.startsWith('tel:') || url.includes('/api/proxy?url=')) return url;
-    // Skip custom protocols (click:, close:, input:, etc. used by JS frameworks)
+    // Skip custom protocols
     if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('http:') && !url.startsWith('https:') && !url.startsWith('/')) return url;
     try {
-      var absolute = new URL(url, location.href).href;
+      // CRITICAL: Resolve relative URLs against the ORIGINAL page URL, not location.href
+      var absolute = new URL(url, _origUrl).href;
       return '/api/proxy?url=' + encodeURIComponent(absolute) + (_adblock ? '&adblock=true' : '') + (_dark ? '&dark=true' : '');
     } catch(e) { return url; }
   }
 
-  /* ── Click interception — rewrite href instead of preventing default ── */
+  /* ── Check if a URL looks like it should be proxied ── */
+  function shouldProxyUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    if (url.startsWith('data:') || url.startsWith('javascript:') || url.startsWith('blob:') ||
+        url.startsWith('about:') || url.startsWith('#') || url.startsWith('mailto:') ||
+        url.startsWith('tel:') || url.includes('/api/proxy?url=')) return false;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('http:') && !url.startsWith('https:') && !url.startsWith('/')) return false;
+    return true;
+  }
+
+  /* ── Rewrite attributes on a DOM element ── */
+  function rewriteElementAttrs(el) {
+    if (!el || !el.tagName) return;
+    var tag = el.tagName.toUpperCase();
+    // src attribute
+    if (el.src && shouldProxyUrl(el.src)) {
+      try { el.src = proxyUrl(el.getAttribute('src') || el.src); } catch(ex) {}
+    }
+    // href attribute
+    if (el.href && shouldProxyUrl(el.href) && tag !== 'A') {
+      // Don't rewrite anchor hrefs here (handled by click handler)
+      try { el.href = proxyUrl(el.getAttribute('href') || el.href); } catch(ex) {}
+    }
+    // action attribute
+    if (el.action && shouldProxyUrl(el.action)) {
+      try { el.action = proxyUrl(el.getAttribute('action') || el.action); } catch(ex) {}
+    }
+    // poster attribute
+    if (el.poster && shouldProxyUrl(el.poster)) {
+      try { el.poster = proxyUrl(el.getAttribute('poster') || el.poster); } catch(ex) {}
+    }
+    // data-src
+    var dataSrc = el.getAttribute('data-src');
+    if (dataSrc && shouldProxyUrl(dataSrc)) {
+      try { el.setAttribute('data-src', proxyUrl(dataSrc)); } catch(ex) {}
+    }
+    // srcset
+    if (el.srcset) {
+      try {
+        var newSrcset = el.srcset.split(',').map(function(entry) {
+          var parts = entry.trim().split(/\\s+/);
+          if (parts[0] && shouldProxyUrl(parts[0])) parts[0] = proxyUrl(parts[0]);
+          return parts.join(' ');
+        }).join(', ');
+        el.srcset = newSrcset;
+      } catch(ex) {}
+    }
+  }
+
+  /* ── MutationObserver — intercept dynamically added elements ── */
+  var observer = new MutationObserver(function(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var mutation = mutations[i];
+      // Handle added nodes
+      if (mutation.addedNodes) {
+        for (var j = 0; j < mutation.addedNodes.length; j++) {
+          var node = mutation.addedNodes[j];
+          if (node.nodeType === 1) { // Element node
+            rewriteElementAttrs(node);
+            // Also rewrite children
+            var children = node.querySelectorAll && node.querySelectorAll('[src],[href],[action],[data-src],[srcset]');
+            if (children) {
+              for (var k = 0; k < children.length; k++) {
+                rewriteElementAttrs(children[k]);
+              }
+            }
+          }
+        }
+      }
+      // Handle attribute changes
+      if (mutation.type === 'attributes') {
+        var attrName = mutation.attributeName;
+        if (attrName === 'src' || attrName === 'href' || attrName === 'action' || attrName === 'data-src' || attrName === 'srcset') {
+          rewriteElementAttrs(mutation.target);
+        }
+      }
+    }
+  });
+
+  // Start observing once DOM is ready
+  if (document.body) {
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href', 'action', 'data-src', 'srcset'] });
+  } else {
+    document.addEventListener('DOMContentLoaded', function() {
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href', 'action', 'data-src', 'srcset'] });
+    });
+  }
+
+  /* ── Click interception ── */
   document.addEventListener('click', function(e) {
     var target = e.target;
-    // Walk up to find anchor
     while (target && target.tagName !== 'A') target = target.parentElement;
     if (target && target.tagName === 'A') {
       if (target.target === '_blank') target.target = '_self';
       var href = target.getAttribute('href');
-      if (href && !href.startsWith('#') && !href.startsWith('javascript:') && !href.startsWith('data:') && !href.startsWith('mailto:') && !href.startsWith('tel:') && !href.includes('/api/proxy')) {
-        // Rewrite the href in-place so the browser's default navigation uses the proxy URL
-        // This preserves JavaScript event handlers and doesn't break SPAs
+      if (href && shouldProxyUrl(href)) {
         try { target.setAttribute('href', proxyUrl(href)); } catch(ex) {}
       }
     }
@@ -401,7 +508,7 @@ async function handleProxy(request: NextRequest, method: string) {
     var form = e.target;
     if (form && form.action) {
       var action = form.getAttribute('action');
-      if (action && !action.includes('/api/proxy')) {
+      if (action && shouldProxyUrl(action)) {
         try { form.action = proxyUrl(action); } catch(ex) {}
       }
     }
@@ -411,11 +518,11 @@ async function handleProxy(request: NextRequest, method: string) {
   var origFetch = window.fetch;
   window.fetch = function(input, init) {
     if (typeof input === 'string') {
-      if (!input.startsWith('data:') && !input.startsWith('blob:') && !input.includes('/api/proxy')) {
+      if (shouldProxyUrl(input)) {
         input = proxyUrl(input);
       }
     } else if (input instanceof Request) {
-      if (!input.url.startsWith('data:') && !input.url.startsWith('blob:') && !input.url.includes('/api/proxy')) {
+      if (shouldProxyUrl(input.url)) {
         try { input = new Request(proxyUrl(input.url), input); } catch(ex) {}
       }
     }
@@ -425,10 +532,27 @@ async function handleProxy(request: NextRequest, method: string) {
   /* ── Intercept XMLHttpRequest ── */
   var origOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-    if (typeof url === 'string' && !url.startsWith('data:') && !url.startsWith('blob:') && !url.includes('/api/proxy')) {
+    if (typeof url === 'string' && shouldProxyUrl(url)) {
       try { url = proxyUrl(url); } catch(ex) {}
     }
     return origOpen.call(this, method, url, async !== false, user, password);
+  };
+
+  /* ── Intercept createElement for link/script/img ── */
+  var origCreateElement = document.createElement.bind(document);
+  document.createElement = function(tagName, options) {
+    var el = origCreateElement(tagName, options);
+    // Defer attribute rewriting — the caller will set src/href after creation
+    var tag = (tagName || '').toUpperCase();
+    if (tag === 'LINK' || tag === 'SCRIPT' || tag === 'IMG' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO' || tag === 'SOURCE' || tag === 'FORM') {
+      // Use defineProperty to intercept .src and .href setters
+      var origSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'src') ||
+                              Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src') ||
+                              Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src') ||
+                              Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
+      // We rely on MutationObserver for attribute changes instead
+    }
+    return el;
   };
 
   /* ── Intercept history API ── */
@@ -449,17 +573,24 @@ async function handleProxy(request: NextRequest, method: string) {
   /* ── Intercept window.open ── */
   var origWindowOpen = window.open;
   window.open = function(url, target, features) {
-    if (url && typeof url === 'string' && !url.startsWith('data:') && !url.startsWith('javascript:') && !url.includes('/api/proxy')) {
+    if (url && typeof url === 'string' && shouldProxyUrl(url)) {
       url = proxyUrl(url);
     }
     return origWindowOpen.call(this, url, '_self', features);
   };
 
+  /* ── Intercept <object> and <embed> ── */
+  document.addEventListener('DOMContentLoaded', function() {
+    var objects = document.querySelectorAll('object[data], embed[src]');
+    for (var i = 0; i < objects.length; i++) {
+      rewriteElementAttrs(objects[i]);
+    }
+  });
+
   /* ── Notify parent of navigation ── */
   var lastNotifiedUrl = '';
   function notifyParent(navUrl) {
     try {
-      // Decode the actual URL from the proxy URL
       var actualUrl = _origUrl;
       if (navUrl && typeof navUrl === 'string') {
         var match = navUrl.match(/[?&]url=([^&]+)/);
@@ -489,9 +620,21 @@ async function handleProxy(request: NextRequest, method: string) {
     }
   });
 
-  /* ── Intercept errors to show fallback ── */
+  /* ── Intercept resource errors ── */
   window.addEventListener('error', function(e) {
-    console.warn('[SageX Proxy] Resource error:', e.message);
+    if (e.target && e.target !== window) {
+      var tag = e.target.tagName;
+      if (tag === 'LINK' || tag === 'SCRIPT' || tag === 'IMG') {
+        var src = e.target.href || e.target.src;
+        if (src && !src.includes('/api/proxy')) {
+          console.warn('[SageX Proxy] Resource failed, trying proxy:', src);
+          // Try to reload through proxy
+          if (tag === 'IMG' && e.target.src && shouldProxyUrl(e.target.getAttribute('src') || '')) {
+            try { e.target.src = proxyUrl(e.target.getAttribute('src') || src); } catch(ex) {}
+          }
+        }
+      }
+    }
   }, true);
 
   /* ── Initial notification ── */
@@ -499,8 +642,8 @@ async function handleProxy(request: NextRequest, method: string) {
 })();
 </script>`;
 
-      /* ── Inject into <head> ── */
-      const injections = `<base href="${baseHref}">${adBlockCSS}${darkModeCSS}${proxyScript}`;
+      /* ── Inject into <head> — NO base href! ── */
+      const injections = `${adBlockCSS}${darkModeCSS}${proxyScript}`;
 
       if (html.match(/<head[^>]*>/i)) {
         html = html.replace(/<head[^>]*>/i, `$&${injections}`);
@@ -510,8 +653,7 @@ async function handleProxy(request: NextRequest, method: string) {
         html = `<!DOCTYPE html><html><head>${injections}</head><body>${html}</body></html>`;
       }
 
-      // ── Inject CSP meta tag to prevent framing issues ──
-      // Remove any existing CSP meta tags
+      // ── Remove CSP meta tags that block framing ──
       html = html.replace(/<meta[^>]+http-equiv=["']?content-security-policy["']?[^>]*>/gi, "");
 
       responseHeaders.set("Content-Type", "text/html; charset=utf-8");
@@ -523,7 +665,7 @@ async function handleProxy(request: NextRequest, method: string) {
     }
 
     /* ══════════════════════════════════════
-       CSS — rewrite url() references
+       CSS — rewrite url() and @import references
        ══════════════════════════════════════ */
     if (contentType.includes("text/css")) {
       let css = new TextDecoder().decode(body);
@@ -536,7 +678,6 @@ async function handleProxy(request: NextRequest, method: string) {
           return _match;
         }
       });
-      // Also rewrite @import statements
       css = css.replace(/@import\s+(?:url\(\s*)?["']?([^"'\);]+)["']?\s*\)?;/gi, (_m, url) => {
         if (url.startsWith("data:") || url.includes("/api/proxy?url=")) return _m;
         try {
@@ -551,7 +692,7 @@ async function handleProxy(request: NextRequest, method: string) {
     }
 
     /* ══════════════════════════════════════
-       JavaScript — rewrite URLs in code
+       JavaScript — rewrite import() and Worker URLs
        ══════════════════════════════════════ */
     if (contentType.includes("javascript")) {
       let js = new TextDecoder().decode(body);
@@ -578,11 +719,27 @@ async function handleProxy(request: NextRequest, method: string) {
         }
       });
 
-      // NOTE: We intentionally do NOT rewrite .src = "..." or .href = "..." in JS
-      // because these patterns are too ambiguous (object properties vs DOM attributes)
-      // and the injection script handles runtime interception of fetch/XHR anyway.
-      // The injection script's fetch/XHR interception covers dynamic URL assignments
-      // that go through the network, and <base href> handles relative URL resolution.
+      // Rewrite .src = "..." assignments for common patterns
+      js = js.replace(/\.src\s*=\s*["']([^"']+)["']/gi, (_m, url) => {
+        if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("javascript:") || url.includes("/api/proxy?url=") || url.startsWith("#")) return _m;
+        try {
+          const absoluteUrl = new URL(url, currentUrl).href;
+          return `.src = "${buildProxyUrl(absoluteUrl, adblock, dark)}"`;
+        } catch {
+          return _m;
+        }
+      });
+
+      // Rewrite .href = "..." assignments
+      js = js.replace(/\.href\s*=\s*["']([^"']+)["']/gi, (_m, url) => {
+        if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("javascript:") || url.includes("/api/proxy?url=") || url.startsWith("#")) return _m;
+        try {
+          const absoluteUrl = new URL(url, currentUrl).href;
+          return `.href = "${buildProxyUrl(absoluteUrl, adblock, dark)}"`;
+        } catch {
+          return _m;
+        }
+      });
 
       responseHeaders.set("Content-Type", "application/javascript; charset=utf-8");
       return new NextResponse(js, { status: response.status, headers: responseHeaders });

@@ -138,3 +138,29 @@ Stage Summary:
 - Custom URL schemes from JS frameworks (stimulus.js, etc.) were being incorrectly proxied
 - JS `.src`/`.href` rewriting was breaking JavaScript execution
 - All issues fixed, proxy now works correctly for GitHub and other JS-heavy sites
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix Fun Hub web browser - CSS and JS not loading through proxy
+
+Work Log:
+- Diagnosed root cause: `<base href="https://example.com/">` was injected into proxied HTML pages, causing all proxy URLs (`/api/proxy?url=...`) to resolve against the original site instead of our proxy server
+- Removed `<base href>` tag from HTML injection (this was the PRIMARY fix)
+- Added removal of any existing `<base>` tags from proxied HTML (some sites have their own)
+- Fixed injection script's `proxyUrl()` function to use `_origUrl` instead of `location.href` for resolving relative URLs
+- Added MutationObserver in injection script to intercept dynamically added DOM elements (link, script, img, iframe, etc.)
+- Added inline `<style>` URL rewriting for `url()` references in HTML
+- Added `.src` and `.href` assignment rewriting in JavaScript files
+- Added `shouldProxyUrl()` helper function for better URL filtering
+- Added `cross-origin-opener-policy`, `cross-origin-embedder-policy`, `cross-origin-resource-policy` to stripped security headers
+- Increased fetch timeout from 15s to 20s
+- Added HTML escaping in error page output
+- Verified: No base href in output, MutationObserver present, _origUrl for URL resolution
+- Verified: CSS, JS, and image proxying all working correctly
+- Verified: All URLs in proxied HTML properly rewritten through proxy
+
+Stage Summary:
+- Primary fix: Removed `<base href>` which was breaking all CSS/JS resource loading
+- Secondary fixes: MutationObserver for dynamic resources, proper URL resolution in injection script, JS .src/.href rewriting
+- All resource types (HTML, CSS, JS, images, fonts) properly proxied and rewritten
+- Build completed and deployed successfully
