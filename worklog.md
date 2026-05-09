@@ -61,3 +61,45 @@ Stage Summary:
 - Framer-motion animations throughout (scroll triggers, floating, parallax)
 - Fully responsive with mobile-first approach
 - Supabase error fixed
+---
+Task ID: 1
+Agent: Main
+Task: Fix Fun Hub web browser - make it work for more websites
+
+Work Log:
+- Analyzed current WebBrowser component and proxy route implementation
+- Identified key issues: no timeout handling, broken cookie rewriting, aggressive HTML rewriting that breaks sites, no error pages, restrictive iframe sandbox, missing content type handling
+- Rewrote /src/app/api/proxy/route.ts with major improvements:
+  - Added 15s fetch timeout with AbortController
+  - Added server-side redirect following (up to 10 hops) instead of client redirects
+  - Added beautiful error pages for connection failures, timeouts, and blocked hosts
+  - Better HTML rewriting: skip data:/javascript:/blob:/about: URLs, skip already-proxied URLs
+  - Added more attribute rewriting: poster, data-src, data-bg, data-lazy-src, meta refresh
+  - Enhanced adblock with more patterns (taboola, outbrain, googletagmanager, etc.)
+  - Better dark mode CSS with scrollbar styling and more selectors
+  - Improved proxy injection script with proper URL decoding for navigation sync
+  - Added sagex-page-error message type for error propagation
+  - Fixed cookie rewriting (no longer rewrites Path to /api/proxy)
+  - Added SVG, XML, manifest content type handling
+  - Added @import rewriting in CSS
+  - Added .src and .href assignment rewriting in JavaScript
+  - Added better request headers (Sec-Fetch-*, Upgrade-Insecure-Requests)
+  - Strips CSP meta tags from proxied HTML
+- Updated WebBrowser component in SageX-New/index.tsx:
+  - Added error and favicon fields to TabData interface
+  - Added loading timeout system (20s) with startLoadingTimeout/clearLoadingTimeout
+  - Added sagex-page-error message handler
+  - Added favicon fetching via Google's favicon service
+  - Added error page overlay with "Retry" and "Open Directly" buttons
+  - Improved iframe: added allow-top-navigation-by-user-activation, camera/microphone permissions
+  - Better zoom handling using proportional width/height scaling
+  - Fixed getProxyUrl to return empty string for blank URLs
+  - Improved tab UI with loading spinners, favicon display, hover effects
+  - Improved navbar with refined spacing and transitions
+- Rebuilt SageX and deployed to /public/sagex/ with updated asset paths
+
+Stage Summary:
+- Proxy route fully rewritten with timeout, error pages, better rewriting
+- Browser component enhanced with error handling, favicons, improved UX
+- New JS bundle: index-xCCqFPY8.js
+- Tested proxy with example.com (200), google.com (200), wikipedia.org (200), github.com (200)
