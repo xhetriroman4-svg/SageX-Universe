@@ -66,7 +66,7 @@ async function handleProxy(request: NextRequest, method: string) {
   const dark = request.nextUrl.searchParams.get("dark") === "true";
 
   if (!targetUrl) {
-    return NextResponse.json({ error: "No URL provided" }, { status: 400 });
+    return NextResponse.json({ error: "No URL provided" }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
 
   try {
@@ -198,6 +198,11 @@ async function handleProxy(request: NextRequest, method: string) {
           "cross-origin-opener-policy",
           "cross-origin-embedder-policy",
           "cross-origin-resource-policy",
+          "cache-control",
+          "vary",
+          "etag",
+          "last-modified",
+          "age",
         ].includes(lowerKey)
       ) {
         responseHeaders.set(key, value);
@@ -207,6 +212,13 @@ async function handleProxy(request: NextRequest, method: string) {
     responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
     responseHeaders.set("Access-Control-Allow-Headers", "*");
+    // CRITICAL: Prevent Netlify CDN from caching proxy responses
+    // Without this, Netlify returns the same cached response for ALL URLs
+    responseHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+    responseHeaders.set("Pragma", "no-cache");
+    responseHeaders.set("Expires", "0");
+    responseHeaders.set("Vary", "*");
+    responseHeaders.set("X-Content-Type-Options", "nosniff");
     responseHeaders.set("Access-Control-Allow-Credentials", "true");
     responseHeaders.delete("content-encoding");
 

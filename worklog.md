@@ -244,3 +244,35 @@ Stage Summary:
 - Proxy browser works on Netlify - all API routes functional
 - Previous deployment URL (fluffy-taiyaki-b6249a.netlify.app) is superseded
 - Key fix: Removed `output: "standalone"` from next.config.ts
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Fix browser not working on Netlify (garbled text / CSS loading as JS)
+
+Work Log:
+- Analyzed user screenshots showing AniWaves rendering garbled text while 9Anime worked
+- Tested proxy subresource loading - discovered CRITICAL Netlify CDN caching bug
+- All 3 different URLs (CSS, JS, CDN CSS) returned identical 380872-byte text/css responses
+- Netlify CDN was caching the FIRST proxy response and serving it for ALL subsequent requests
+- This meant JS files were served as CSS content, causing garbled rendering
+- Fixed by adding comprehensive cache-busting headers to ALL proxy responses:
+  - Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  - Pragma: no-cache
+  - Expires: 0
+  - Vary: *
+  - X-Content-Type-Options: nosniff
+- Also stripped upstream cache-control, vary, etag, last-modified, age headers from origin responses
+  to prevent them from interfering with our cache-control directives
+- Redeployed to Netlify
+- Verified: Each URL now returns correct content type and unique size
+  - CSS: 380872 bytes, text/css ✅
+  - JS: 89801 bytes, application/javascript ✅
+  - CDN CSS: 102582 bytes, text/css ✅
+  - HTML: 59878 bytes, text/html ✅
+
+Stage Summary:
+- Browser now works correctly on Netlify - no more garbled text
+- Root cause: Netlify CDN was aggressively caching proxy responses
+- Fix: Cache-Control: no-store + Vary: * headers prevent CDN caching
+- Deployed at: https://13129.netlify.app
