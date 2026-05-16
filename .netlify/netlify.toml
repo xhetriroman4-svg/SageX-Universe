@@ -4,6 +4,7 @@ redirectsOrigin = "inline"
 [functions]
 
 [functions."*"]
+included_files = [".next/server/**", ".env", ".env.production", ".env.local", ".env.production.local"]
 
 [[plugins]]
 origin = "config"

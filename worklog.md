@@ -220,3 +220,27 @@ Stage Summary:
 - Entertainment sites prioritized in browser home and bookmarks
 - New JS bundle: index-CxLSS9Zt.js deployed to /public/sagex/assets/
 - Server running on port 3000
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix browser not working on Netlify deployment
+
+Work Log:
+- Diagnosed Netlify 404 errors on ALL routes (not just proxy)
+- Root cause: `output: "standalone"` in next.config.ts was incompatible with @netlify/plugin-nextjs
+- The standalone output mode creates a different directory structure that the Netlify plugin couldn't properly convert to serverless functions
+- Fixed by removing `output: "standalone"` from next.config.ts
+- Also removed the old `cp -r` commands in build script that expected standalone output
+- Updated netlify.toml with `[functions] included_files` config
+- Clean rebuild and redeploy to Netlify
+- Verified: Main page returns 200, /sagex/index.html returns 200, /api/proxy returns 200 with proxied content
+- Tested proxy with Google, 9Anime, Poki, SoundCloud - all return 200
+- Also removed "Free · No Login" text from all Fun Hub cards
+- Local server running on port 3001
+
+Stage Summary:
+- Netlify deployment now fully working: https://13129.netlify.app
+- Proxy browser works on Netlify - all API routes functional
+- Previous deployment URL (fluffy-taiyaki-b6249a.netlify.app) is superseded
+- Key fix: Removed `output: "standalone"` from next.config.ts

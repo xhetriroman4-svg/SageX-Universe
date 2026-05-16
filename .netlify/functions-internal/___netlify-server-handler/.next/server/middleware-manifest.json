@@ -1,1 +1,6 @@
-{"version":3,"middleware":{},"sortedMiddleware":[],"functions":{}}
+{
+  "version": 3,
+  "middleware": {},
+  "sortedMiddleware": [],
+  "functions": {}
+}
