@@ -273,12 +273,8 @@ async function handleProxy(request: NextRequest, method: string) {
       // Existing <base> tags would break our proxy URL resolution
       html = html.replace(/<base[^>]*>/gi, "");
 
-      // ── Rewrite <meta http-equiv="refresh"> ──
-      html = html.replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["']?(\d+;\s*url=)([^"'>]+)["']?[^>]*>/gi,
-        (_m, prefix, url) => {
-          return `<meta http-equiv="refresh" content="${prefix}${rewriteUrl(url.trim())}">`;
-        }
-      );
+      // ── REMOVE <meta http-equiv="refresh"> to prevent auto-refresh ──
+      html = html.replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, "");
 
       // ── Rewrite HTML tag attributes ──
       html = html.replace(/<([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*?)?)(\s*\/?)>/g, (_m, tagName, attrs, closing) => {
@@ -590,6 +586,22 @@ async function handleProxy(request: NextRequest, method: string) {
     }
     return origWindowOpen.call(this, url, '_self', features);
   };
+
+  /* ── Block location.reload() to prevent auto-refresh ── */
+  // Replace location.reload with a no-op that notifies parent instead
+  var origReload = location.reload.bind(location);
+  var reloadBlocked = false;
+  Object.defineProperty(location, 'reload', {
+    configurable: true,
+    value: function() {
+      if (reloadBlocked) return;
+      reloadBlocked = true;
+      // Notify parent instead of actually reloading
+      notifyParent(location.href);
+      // Allow reload again after 5 seconds (for manual user-triggered reloads)
+      setTimeout(function() { reloadBlocked = false; }, 5000);
+    }
+  });
 
   /* ── Intercept <object> and <embed> ── */
   document.addEventListener('DOMContentLoaded', function() {
