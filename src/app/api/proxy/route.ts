@@ -18,7 +18,7 @@ const isBlockedHostname = (hostname: string) => {
 const FETCH_TIMEOUT = 20000; // 20s timeout
 
 function buildProxyUrl(url: string, adblock: boolean, dark: boolean) {
-  return `/api/proxy?url=${encodeURIComponent(url)}${adblock ? "&adblock=true" : ""}${dark ? "&dark=true" : ""}`;
+  return `/api/proxy?url=${encodeURIComponent(url)}${adblock ? "&adblock=true" : ""}${dark ? "&dark=true" : ""}&_t=${Date.now()}`;
 }
 
 function escapeHtml(str: string) {
@@ -410,7 +410,7 @@ async function handleProxy(request: NextRequest, method: string) {
     try {
       // CRITICAL: Resolve relative URLs against the ORIGINAL page URL, not location.href
       var absolute = new URL(url, _origUrl).href;
-      return '/api/proxy?url=' + encodeURIComponent(absolute) + (_adblock ? '&adblock=true' : '') + (_dark ? '&dark=true' : '');
+      return '/api/proxy?url=' + encodeURIComponent(absolute) + (_adblock ? '&adblock=true' : '') + (_dark ? '&dark=true' : '') + '&_t=' + Date.now();
     } catch(e) { return url; }
   }
 

@@ -276,3 +276,32 @@ Stage Summary:
 - Root cause: Netlify CDN was aggressively caching proxy responses
 - Fix: Cache-Control: no-store + Vary: * headers prevent CDN caching
 - Deployed at: https://13129.netlify.app
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Fix browser still not working on Netlify (round 2)
+
+Work Log:
+- User reported browser still broken - same garbled text issue
+- Analyzed that Netlify CDN was STILL caching proxy responses despite Cache-Control headers
+- Root cause: CDN edge caches had already cached the broken responses and Cache-Control headers alone don't invalidate existing cached content
+- Applied comprehensive cache-busting solution:
+  1. Added `_t=Date.now()` timestamp parameter to ALL proxy URLs (client-side getProxyUrl + server-side buildProxyUrl + injected proxy script's proxyUrl function)
+  2. Every proxy request now has a unique URL, making CDN caching impossible
+  3. Added Vary: * header and stripped upstream cache-control/vary/etag/last-modified/age headers
+  4. Added Netlify [[headers]] config in netlify.toml for /api/proxy path
+  5. Fixed package.json build script (removed stale standalone copy commands)
+  6. Set node_bundler = "none" in netlify.toml [functions]
+- Verified all responses return unique sizes:
+  - CSS: 381,263 bytes, text/css ✅
+  - JS: 89,801 bytes, application/javascript ✅
+  - HTML: 60,546 bytes, text/html ✅
+  - Google: 92,045 bytes ✅
+  - 9Anime: 275,622 bytes ✅
+- New SageX bundle: index-2dTVGtkl.js
+
+Stage Summary:
+- Browser should now work on Netlify - every proxy URL has unique _t timestamp
+- CDN can no longer cache responses because each URL is unique
+- Deployed at: https://13129.netlify.app

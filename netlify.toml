@@ -7,3 +7,13 @@
 
 [functions]
   included_files = [".next/server/**"]
+  node_bundler = "none"
+
+# Force all /api/proxy requests to NOT be cached by Netlify CDN
+[[headers]]
+  for = "/api/proxy"
+  [headers.values]
+    Cache-Control = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+    Pragma = "no-cache"
+    Vary = "*"
+    X-Content-Type-Options = "nosniff"
